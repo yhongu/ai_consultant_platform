@@ -467,7 +467,7 @@ export const useRealtimeConnection = (): UseRealtimeConnectionReturn => {
   // RealtimeAPIClientの生成
   const createRealtimeClient = useCallback(() => {
     const client = new RealtimeAPIClient({
-      tokenServiceUrl: '/session',
+      tokenServiceUrl: '/api/session',
       enableFallback: true
     });
 
