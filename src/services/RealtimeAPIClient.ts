@@ -1,9 +1,9 @@
-import { 
-  RealtimeSession, 
+import {
+  RealtimeSession,
   RealtimeEvent,
   SessionUpdateEvent,
   ResponseCreateEvent,
-  WebRTCManagerOptions 
+  WebRTCManagerOptions
 } from '../types/webrtc';
 import { WebRTCManager } from './WebRTCManager';
 import { AudioStreamProcessor } from './AudioStreamProcessor';
@@ -20,19 +20,19 @@ export class RealtimeAPIClient {
   private tokenManager: EphemeralTokenManager;
   private autoMutedByAssistant: boolean = false;
   private autoMuteTimeoutId: number | null = null;
-  
+
   private currentSession: RealtimeSession | null = null;
   private consultantId: string | null = null;
   private sessionState: 'disconnected' | 'connecting' | 'connected' | 'error' = 'disconnected';
-  
+
   // 会話の状態管理
   private conversationPhase: 'questions' | 'hot-reading' | 'cold-reading' | 'subsidies' | 'summary' | 'recommendations' = 'questions';
   private messageHistory: Array<{ role: 'user' | 'assistant'; content: string; timestamp: number }> = [];
-  
+
   // 音声転写管理
   private lastUserTranscript: string = '';
   private lastAssistantTranscript: string = '';
-  
+
   // イベントハンドラー
   private eventHandlers: Map<string, Set<Function>> = new Map();
   private shouldInjectResetPrompt: boolean = false;
@@ -42,8 +42,8 @@ export class RealtimeAPIClient {
   constructor(options: Partial<WebRTCManagerOptions> = {}) {
     // WebRTCManagerを初期化
     this.webrtcManager = new WebRTCManager(options);
-    this.tokenManager = new EphemeralTokenManager(options.tokenServiceUrl || '/session');
-    
+    this.tokenManager = new EphemeralTokenManager(options.tokenServiceUrl || '/api/session');
+
     // WebRTCイベントをリレー
     this.setupWebRTCEventRelay();
   }
@@ -106,11 +106,11 @@ export class RealtimeAPIClient {
   async initializeSession(consultantId: string): Promise<RealtimeSession> {
     console.log('=== Initialize Session Called ===');
     console.log('Consultant ID:', consultantId);
-    
+
     try {
       this.sessionState = 'connecting';
       this.consultantId = consultantId;
-      
+
       console.log('Emitting session initializing event...');
       this.emit('sessioninitializing', { consultantId });
 
@@ -125,21 +125,21 @@ export class RealtimeAPIClient {
       } catch (_) {
         // no-op
       }
-      
+
       // 音声処理を開始
       console.log('Setting up audio processing...');
       await this.setupAudioProcessing();
       console.log('Audio processing setup completed');
-      
+
       // セッション設定を送信
       console.log('Configuring session...');
       await this.configureSession(consultantId);
       console.log('Session configuration completed');
-      
+
       this.sessionState = 'connected';
-      this.emit('sessioninitialized', { 
+      this.emit('sessioninitialized', {
         session: this.currentSession,
-        consultantId 
+        consultantId
       });
 
       return this.currentSession!;
@@ -190,7 +190,7 @@ export class RealtimeAPIClient {
   private async configureSession(consultantId: string): Promise<void> {
     console.log('=== Configure Session Started ===');
     console.log('Consultant ID:', consultantId);
-    
+
     console.log('Building session configuration...');
     const sessionConfig: SessionUpdateEvent = {
       type: 'session.update',
@@ -219,12 +219,12 @@ export class RealtimeAPIClient {
 
     console.log('Sending session configuration...');
     this.sendRealtimeEvent(sessionConfig);
-    
+
     // 初期化完了まで待機
     console.log('Waiting for session creation...');
     await this.waitForSessionCreated();
     console.log('Session creation completed');
-    
+
     // 既存接続の場合でも必ずプロンプト更新を実行
     console.log('=== Force updating consultant instructions ===');
     if (this.webrtcManager.isConnected()) {
@@ -550,10 +550,10 @@ ${resetInstruction}${phaseInstruction}
    */
   private generateExpertiseDetails(consultant: any): string {
     const details = [];
-    
+
     details.push(`**主要専門分野**: ${consultant.specialties.join('、')}`);
     details.push(`**核心的な専門知識**: ${consultant.expertise}`);
-    
+
     // 業界別の詳細知識
     consultant.specialties.forEach((specialty: string) => {
       switch (specialty) {
@@ -588,11 +588,11 @@ ${resetInstruction}${phaseInstruction}
    */
   private generateNetworkInformation(consultant: any): string {
     const details = [];
-    
+
     details.push(`**保有人脈**: ${consultant.connections}`);
     details.push('');
     details.push('**紹介可能な専門家・パートナー**:');
-    
+
     // 専門分野に応じた人脈の詳細
     consultant.specialties.forEach((specialty: string) => {
       switch (specialty) {
@@ -640,7 +640,7 @@ ${resetInstruction}${phaseInstruction}
       }
 
       console.log(`⏳ Waiting for session.created event (timeout: ${timeoutMs}ms)`);
-      
+
       const timeout = setTimeout(() => {
         console.warn('⚠️ Session creation timeout - but WebRTC might still be working');
         // WebRTC接続が実際に動作している場合はエラーにしない
@@ -673,7 +673,7 @@ ${resetInstruction}${phaseInstruction}
       };
 
       this.on('realtimeevent', handleSessionCreated);
-      
+
       // WebRTC接続状態を定期的にチェック
     const connectionCheck = setInterval(() => {
         if (this.webrtcManager.isConnected()) {
@@ -699,7 +699,7 @@ ${resetInstruction}${phaseInstruction}
       console.log('Instructions preview:', event.session.instructions + '...');
       console.log('===============================================');
     }
-    
+
     this.webrtcManager.sendRealtimeEvent(event);
     this.emit('eventsent', event);
   }
@@ -863,9 +863,9 @@ ${resetInstruction}${phaseInstruction}
   private handleInputAudioTranscriptionCompleted(event: any): void {
     const transcript = event.transcript || '';
     this.lastUserTranscript = transcript;
-    
+
     console.log('🎤 User transcript:', transcript);
-    
+
     // メッセージ履歴を更新
     this.messageHistory.push({
       role: 'user',
@@ -904,9 +904,9 @@ ${resetInstruction}${phaseInstruction}
       transcript = transcript.replace(match[0], '').trim();
     }
     this.lastAssistantTranscript = transcript;
-    
+
     console.log('🤖 Assistant transcript:', transcript);
-    
+
     // メッセージ履歴を更新
     this.messageHistory.push({
       role: 'assistant',
@@ -945,10 +945,10 @@ ${resetInstruction}${phaseInstruction}
    */
   private handleConversationItemCreated(event: any): void {
     const item = event.item;
-    
+
     // メッセージ履歴に追加
     this.addToMessageHistory(item);
-    
+
     this.emit('conversationitemcreated', {
       previous_item_id: event.previous_item_id,
       item: item
@@ -1130,7 +1130,7 @@ ${resetInstruction}${phaseInstruction}
    */
   private handleRealtimeError(event: any): void {
     const error = event.error;
-    
+
     this.emit('realtimeapierror', {
       type: error.type,
       code: error.code,
@@ -1151,7 +1151,7 @@ ${resetInstruction}${phaseInstruction}
   private addToMessageHistory(item: any): void {
     if (item.type === 'message') {
       let content = '';
-      
+
       // コンテンツの抽出
       if (item.content) {
         item.content.forEach((contentPart: any) => {
@@ -1188,7 +1188,7 @@ ${resetInstruction}${phaseInstruction}
    */
   private considerPhaseProgression(response: any): void {
     const messageCount = this.messageHistory.length;
-    
+
     // 簡単なフェーズ進行ロジック
     switch (this.conversationPhase) {
       case 'questions':
@@ -1196,25 +1196,25 @@ ${resetInstruction}${phaseInstruction}
           this.setConversationPhase('hot-reading');
         }
         break;
-        
+
       case 'hot-reading':
         if (messageCount >= 8) { // さらに2往復でコールドリーディングに
           this.setConversationPhase('cold-reading');
         }
         break;
-        
+
       case 'cold-reading':
         if (messageCount >= 12) { // 補助金情報へ
           this.setConversationPhase('subsidies');
         }
         break;
-        
+
       case 'subsidies':
         if (messageCount >= 16) { // まとめへ
           this.setConversationPhase('summary');
         }
         break;
-        
+
       case 'summary':
         if (messageCount >= 18) { // 推奨事項へ
           this.setConversationPhase('recommendations');
@@ -1259,10 +1259,10 @@ ${resetInstruction}${phaseInstruction}
    */
   setConversationPhase(phase: typeof this.conversationPhase): void {
     this.conversationPhase = phase;
-    
+
     // フェーズに応じた指示文の更新
     this.updateSessionInstructions();
-    
+
     this.emit('phasechanged', { phase });
   }
 
@@ -1273,12 +1273,12 @@ ${resetInstruction}${phaseInstruction}
     if (!this.consultantId || !this.currentSession) return;
 
     const updatedInstructions = await this.buildConsultantInstructions(this.consultantId);
-    
+
     console.log('=== Updating Session Instructions ===');
     console.log('Consultant ID:', this.consultantId);
     console.log('Instructions preview:', updatedInstructions + '...');
     console.log('=====================================');
-    
+
     const updateEvent: SessionUpdateEvent = {
       type: 'session.update',
       event_id: this.generateEventId(),
@@ -1436,7 +1436,7 @@ ${resetInstruction}${phaseInstruction}
   async endSession(): Promise<void> {
     try {
       this.sessionState = 'disconnected';
-      
+
       // 音声処理を停止
       if (this.audioProcessor) {
         await this.audioProcessor.cleanup();
@@ -1445,7 +1445,7 @@ ${resetInstruction}${phaseInstruction}
 
       // WebRTC接続を終了
       await this.webrtcManager.cleanup();
-      
+
       // 状態をリセット
       this.currentSession = null;
       this.consultantId = null;

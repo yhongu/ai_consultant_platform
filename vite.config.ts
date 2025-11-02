@@ -10,7 +10,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/session': {
-        target: 'http://localhost:3001',
+        // target: 'http://localhost:3001',
         changeOrigin: true,
         secure: false
       }
