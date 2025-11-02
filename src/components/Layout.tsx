@@ -1,6 +1,7 @@
 import React from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Users, History, LogOut } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -9,8 +10,15 @@ interface LayoutProps {
 
 export const Layout: React.FC<LayoutProps> = ({ children, fullscreen = false }) => {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { logout } = useAuth();
 
   const isActive = (path: string) => location.pathname === path;
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
 
   if (fullscreen) {
     return (
@@ -54,13 +62,14 @@ export const Layout: React.FC<LayoutProps> = ({ children, fullscreen = false }) 
                 </Link>
               </div>
             </div>
-            <Link
-              to="/login"
+            <button
+              type="button"
+              onClick={handleLogout}
               className="flex items-center space-x-2 text-gray-600 hover:text-indigo-600 transition-colors"
             >
               <LogOut size={16} />
               <span>ログアウト</span>
-            </Link>
+            </button>
           </div>
         </div>
       </nav>

@@ -8,6 +8,7 @@ import { mockTalents, questionFlow, hotReadingResponses, coldReadingResponses, s
 import { Message, RealtimeMessage } from '../types';
 import { Send, User, Bot, Mic, MicOff, Volume2, Phone, PhoneOff } from 'lucide-react';
 import { useRealtimeConnection } from '../hooks/useRealtimeConnection';
+import { ConsultingPhase } from '../services/realtime';
 
 export const ConsultantDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -41,6 +42,41 @@ export const ConsultantDetailPage: React.FC = () => {
   const isConnected = useWebRTC ? state.isConnected : hasSpokenWelcome;
   const currentPhase = useWebRTC ? state.conversationPhase : getPhaseFromMessageCount();
   const currentMessages = useWebRTC ? convertRealtimeMessagesToMessages(state.messageHistory) : messages;
+
+  const agentPhaseOptions: Array<{
+    phase: ConsultingPhase;
+    label: string;
+    description: string;
+  }> = [
+    { phase: 'deep_research', label: '開始・深掘り', description: 'ヒアリングと仮説構築' },
+    { phase: 'mode_check', label: 'モード確認', description: '意図確認と優先度整理' },
+    { phase: 'consulting', label: 'コンサル', description: '分析と提案提示' },
+    { phase: 'summary', label: 'サマリー', description: '会話の要約と次アクション' },
+  ];
+
+  const agentPhaseDisplay =
+    agentPhaseOptions.find(option => option.phase === state.agentPhase)?.label ?? '未設定';
+  const pendingPhaseLabel = state.pendingAgentPhase
+    ? agentPhaseOptions.find(option => option.phase === state.pendingAgentPhase)?.label
+    : undefined;
+  const transitionStatusMessage = (() => {
+    switch (state.phaseTransitionStatus) {
+      case 'awaiting_confirmation':
+        return pendingPhaseLabel
+          ? `「${pendingPhaseLabel}」への移行をユーザーに確認中...（試行 ${state.phaseTransitionAttempt}）`
+          : 'ユーザー確認中...';
+      case 'declined':
+        return pendingPhaseLabel
+          ? `「${pendingPhaseLabel}」への移行はユーザーに拒否されました`
+          : 'ユーザーがフェーズ移行を拒否しました';
+      case 'error':
+        return 'フェーズ移行中にエラーが発生しました';
+      default:
+        return '';
+    }
+  })();
+  const canRequestAgentPhase =
+    state.isConnected && state.connectionState === 'connected';
 
   // ヘルパー関数: メッセージ数からフェーズを推測
   function getPhaseFromMessageCount(): 'questions' | 'hot-reading' | 'cold-reading' | 'subsidies' | 'summary' | 'recommendations' {
@@ -109,6 +145,19 @@ export const ConsultantDetailPage: React.FC = () => {
     await actions.retry();
   };
 
+  const handleAgentPhaseRequest = (phase: ConsultingPhase) => {
+    if (!canRequestAgentPhase) return;
+    actions.requestAgentPhase(phase);
+  };
+
+  const handleForceAgentPhase = (phase: ConsultingPhase) => {
+    void actions.forceAgentPhase(phase);
+  };
+
+  const handleImmediateAgentPhase = (phase: ConsultingPhase) => {
+    handleForceAgentPhase(phase);
+  };
+
   // 音声ファイルを再生する関数
   const playAudioFile = (audioNumber?: number) => {
     const currentAudioIndex = audioNumber || audioIndex;
@@ -159,7 +208,6 @@ export const ConsultantDetailPage: React.FC = () => {
   };
 
   const handleStartCall = () => {
-    setIsConversationStarted(true);
     console.log('通話開始 - 初回音声再生');
     playAudioFile(1);
   };
@@ -363,6 +411,76 @@ export const ConsultantDetailPage: React.FC = () => {
               <p className="text-gray-800 leading-relaxed text-xs">
                 {latestUserMessage.content}
               </p>
+            </div>
+          </div>
+        )}
+
+        {/* フェーズ制御パネル */}
+        {useWebRTC && (
+          <div className="absolute bottom-40 left-8 w-80 z-10">
+            <div className="bg-white/95 backdrop-blur-md border border-white/60 rounded-2xl shadow-2xl p-4 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-800">フェーズ制御</h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  現在: <span className="font-medium text-gray-900">{agentPhaseDisplay}</span>
+                </p>
+                {transitionStatusMessage && (
+                  <p className="text-xs text-indigo-600 mt-1">{transitionStatusMessage}</p>
+                )}
+                {state.phaseTransitionReason && (
+                  <p className="text-xs text-red-600 mt-1">
+                    理由: {state.phaseTransitionReason}
+                  </p>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {agentPhaseOptions.map(option => {
+                  const isCurrent = state.agentPhase === option.phase;
+                  const isPending =
+                    state.pendingAgentPhase === option.phase &&
+                    state.phaseTransitionStatus === 'awaiting_confirmation';
+                  return (
+                    <div key={option.phase} className="relative">
+                      <button
+                        type="button"
+                        onClick={() => handleAgentPhaseRequest(option.phase)}
+                        disabled={!canRequestAgentPhase || isCurrent || isPending}
+                        className={`w-full text-left text-xs px-3 py-2 rounded-lg border transition ${
+                          isCurrent
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : isPending
+                            ? 'bg-yellow-100 text-yellow-800 border-yellow-300 animate-pulse'
+                            : 'bg-white text-gray-700 border-gray-200 hover:border-blue-400 hover:text-blue-600'
+                        }`}
+                      >
+                        <span className="block font-semibold">{option.label}</span>
+                        <span className="block text-[10px] mt-1 text-gray-500">
+                          {option.description}
+                        </span>
+                      </button>
+                      {!isCurrent && (
+                        <button
+                          type="button"
+                          onClick={() => handleImmediateAgentPhase(option.phase)}
+                          className="absolute top-2 right-2 text-[10px] text-gray-400 hover:text-gray-700 underline"
+                        >
+                          即時適用
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {state.phaseTransitionStatus === 'declined' && state.pendingAgentPhase && (
+                <div className="flex items-center justify-end">
+                  <button
+                    onClick={() => handleForceAgentPhase(state.pendingAgentPhase as ConsultingPhase)}
+                    className="text-[11px] text-red-600 hover:text-red-700 underline"
+                  >
+                    強制適用
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}

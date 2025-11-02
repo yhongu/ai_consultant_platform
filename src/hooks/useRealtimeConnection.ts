@@ -1,6 +1,41 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { RealtimeAPIClient } from '../services/RealtimeAPIClient';
+import {
+  ConsultingPhase,
+  PhaseManager,
+  RealtimeController,
+  RealtimeAPITransport,
+} from '../services/realtime';
 import { RealtimeSession } from '../types/webrtc';
+
+const DEFAULT_AGENT_PHASE: ConsultingPhase = 'deep_research';
+
+const AGENT_PHASE_PROMPTS: Record<ConsultingPhase, string> = {
+  deep_research: '開始・深掘りフェーズに移行してもよろしいですか？',
+  mode_check: 'モード確認フェーズに移行してもよろしいですか？',
+  consulting: 'コンサルティングフェーズに移行してもよろしいですか？',
+  summary: 'サマリーフェーズに移行してもよろしいですか？',
+};
+
+const summarizeMessageHistory = (
+  input: Array<{ role: 'user' | 'assistant'; content: string; timestamp: number }>,
+): string | null => {
+  if (!input.length) return null;
+
+  const recent = input.slice(-10);
+  const lines = recent
+    .map((msg) => {
+      const speaker = msg.role === 'user' ? 'ユーザー' : 'アシスタント';
+      const text = msg.content.replace(/\s+/g, ' ').trim();
+      if (!text) return null;
+      const truncated = text.length > 160 ? `${text.slice(0, 160)}…` : text;
+      return `${speaker}: ${truncated}`;
+    })
+    .filter((line): line is string => Boolean(line));
+
+  if (!lines.length) return null;
+  return lines.join('\n');
+};
 
 interface RealtimeConnectionState {
   // 接続状態
@@ -22,6 +57,13 @@ interface RealtimeConnectionState {
   messageHistory: Array<{ role: 'user' | 'assistant'; content: string; timestamp: number }>;
   // 紹介カード（複数想定）
   recommendedIntroductions: any[];
+  // エージェントフェーズ制御
+  agentPhase: ConsultingPhase;
+  pendingAgentPhase: ConsultingPhase | null;
+  phaseTransitionStatus: 'idle' | 'awaiting_confirmation' | 'declined' | 'error';
+  phaseTransitionAttempt: number;
+  phaseTransitionReason?: string;
+  phaseTransitionId: string | null;
   
   // エラー状態
   error: {
@@ -58,6 +100,8 @@ interface RealtimeConnectionActions {
   createResponse: () => void;
   cancelResponse: () => void;
   changePhase: (phase: RealtimeConnectionState['conversationPhase']) => void;
+  requestAgentPhase: (phase: ConsultingPhase) => void;
+  forceAgentPhase: (phase: ConsultingPhase) => Promise<void>;
   
   // バッファ制御
   commitAudioBuffer: () => void;
@@ -76,6 +120,9 @@ export interface UseRealtimeConnectionReturn {
 export const useRealtimeConnection = (): UseRealtimeConnectionReturn => {
   // RealtimeAPIClient のインスタンス
   const clientRef = useRef<RealtimeAPIClient | null>(null);
+  const controllerRef = useRef<RealtimeController | null>(null);
+  const phaseManagerRef = useRef<PhaseManager | null>(null);
+  const transportRef = useRef<RealtimeAPITransport | null>(null);
   const lastConsultantIdRef = useRef<string | null>(null);
   // 紹介データのキャッシュ
   const introductionsCacheRef = useRef<any[] | null>(null);
@@ -107,7 +154,6 @@ export const useRealtimeConnection = (): UseRealtimeConnectionReturn => {
     return introductionsCacheRef.current!;
   }, []);
   
-  // 状態管理
   const [state, setState] = useState<RealtimeConnectionState>({
     isConnected: false,
     connectionState: 'disconnected',
@@ -120,25 +166,136 @@ export const useRealtimeConnection = (): UseRealtimeConnectionReturn => {
     conversationPhase: 'questions',
     messageHistory: [],
     recommendedIntroductions: [],
+    agentPhase: DEFAULT_AGENT_PHASE,
+    pendingAgentPhase: null,
+    phaseTransitionStatus: 'idle',
+    phaseTransitionAttempt: 0,
+    phaseTransitionReason: undefined,
+    phaseTransitionId: null,
     error: null,
     isFallbackMode: false,
     eventLog: []
   });
+  
+  const teardownRealtimePipeline = useCallback(async () => {
+    phaseManagerRef.current?.dispose();
+    phaseManagerRef.current = null;
 
-  // RealtimeAPIClientの初期化
-  const initializeClient = useCallback(() => {
-    if (!clientRef.current) {
-      clientRef.current = new RealtimeAPIClient({
-        tokenServiceUrl: '/session',
-        enableFallback: true
-      });
-      
-      // イベントリスナーの設定
-      setupEventListeners(clientRef.current);
+    if (controllerRef.current) {
+      try {
+        await controllerRef.current.cleanup();
+      } catch (error) {
+        console.warn('⚠️ Failed to cleanup RealtimeController:', error);
+      }
+      controllerRef.current = null;
     }
-    return clientRef.current;
-  }, []);
 
+    transportRef.current = null;
+    clientRef.current = null;
+
+    setState(prev => ({
+      ...prev,
+      isConnected: false,
+      connectionState: 'disconnected',
+      session: null,
+      consultantId: null,
+      conversationPhase: 'questions',
+      messageHistory: [],
+      recommendedIntroductions: [],
+      agentPhase: DEFAULT_AGENT_PHASE,
+      pendingAgentPhase: null,
+      phaseTransitionStatus: 'idle',
+      phaseTransitionAttempt: 0,
+      phaseTransitionReason: undefined,
+      phaseTransitionId: null,
+    }));
+  }, [setState]);
+
+  const setupRealtimePipeline = useCallback((client: RealtimeAPIClient) => {
+    const transport = new RealtimeAPITransport(client);
+    transportRef.current = transport;
+
+    const controller = new RealtimeController(transport, {
+      promptBuilder: (phase) =>
+        AGENT_PHASE_PROMPTS[phase] ?? '次のフェーズに移行していいですか？',
+      voice: 'alloy',
+      includeTextModalities: true,
+    });
+    controllerRef.current = controller;
+
+    const manager = new PhaseManager(controller, {
+      initialPhase: DEFAULT_AGENT_PHASE,
+      voice: 'alloy',
+      includeTextModalities: true,
+      promptBuilder: (phase) =>
+        AGENT_PHASE_PROMPTS[phase] ?? '次のフェーズに移行していいですか？',
+      onTransitionRequested: ({ phaseCandidate, transitionId, attempt }) => {
+        setState(prev => ({
+          ...prev,
+          pendingAgentPhase: phaseCandidate,
+          phaseTransitionStatus: 'awaiting_confirmation',
+          phaseTransitionAttempt: attempt,
+          phaseTransitionReason: undefined,
+          phaseTransitionId: transitionId,
+        }));
+      },
+      onPhaseChanged: ({ current, transitionId, metadata }) => {
+        setState(prev => ({
+          ...prev,
+          agentPhase: current,
+          pendingAgentPhase: null,
+          phaseTransitionStatus: 'idle',
+          phaseTransitionAttempt: 0,
+          phaseTransitionReason: undefined,
+          phaseTransitionId: transitionId,
+        }));
+        const shouldReset = transitionId === 'forced' || metadata?.forced === true;
+        const shouldSkip = metadata?.forced === true;
+        if (!shouldSkip && clientRef.current) {
+          clientRef.current
+            .setAgentPhase(current, {
+              resetConversation: shouldReset,
+            })
+            .catch((error: unknown) => {
+              console.warn('Failed to propagate agent phase to RealtimeAPIClient:', error);
+            });
+        }
+      },
+      onTransitionDeclined: ({ phaseCandidate, transitionId, reason }) => {
+        setState(prev => ({
+          ...prev,
+          pendingAgentPhase: phaseCandidate,
+          phaseTransitionStatus: 'declined',
+          phaseTransitionAttempt: 0,
+          phaseTransitionReason: reason,
+          phaseTransitionId: transitionId,
+        }));
+      },
+      onTransitionError: ({ phaseCandidate, transitionId, error }) => {
+        setState(prev => ({
+          ...prev,
+          pendingAgentPhase: phaseCandidate,
+          phaseTransitionStatus: 'error',
+          phaseTransitionAttempt: 0,
+          phaseTransitionReason:
+            error instanceof Error ? error.message : String(error),
+          phaseTransitionId: transitionId,
+        }));
+      },
+    });
+    phaseManagerRef.current = manager;
+
+    setState(prev => ({
+      ...prev,
+      agentPhase: DEFAULT_AGENT_PHASE,
+      pendingAgentPhase: null,
+      phaseTransitionStatus: 'idle',
+      phaseTransitionAttempt: 0,
+      phaseTransitionReason: undefined,
+      phaseTransitionId: null,
+    }));
+  }, [setState]);
+  
   // イベントリスナーの設定
   const setupEventListeners = useCallback((client: RealtimeAPIClient) => {
     // 接続状態の変化
@@ -180,7 +337,13 @@ export const useRealtimeConnection = (): UseRealtimeConnectionReturn => {
         consultantId: null,
         conversationPhase: 'questions',
         messageHistory: [],
-        recommendedIntroductions: []
+        recommendedIntroductions: [],
+        agentPhase: DEFAULT_AGENT_PHASE,
+        pendingAgentPhase: null,
+        phaseTransitionStatus: 'idle',
+        phaseTransitionAttempt: 0,
+        phaseTransitionReason: undefined,
+        phaseTransitionId: null,
       }));
     });
 
@@ -296,37 +459,57 @@ export const useRealtimeConnection = (): UseRealtimeConnectionReturn => {
       setState(prev => ({ ...prev, isFallbackMode: true }));
     });
 
-  }, []);
+  }, [loadIntroductions]);
+
+  // RealtimeAPIClientの生成
+  const createRealtimeClient = useCallback(() => {
+    const client = new RealtimeAPIClient({
+      tokenServiceUrl: '/session',
+      enableFallback: true
+    });
+    
+    setupEventListeners(client);
+    return client;
+  }, [setupEventListeners]);
 
   // 接続
+
   const connect = useCallback(async (consultantId: string) => {
     console.log('=== useRealtimeConnection connect called ===');
     console.log('Consultant ID:', consultantId);
     
     try {
-      // 既存接続がある場合は強制的に切断
-      if (clientRef.current) {
-        console.log('🔄 Existing connection detected - forcing disconnect');
-        await clientRef.current.endSession();
-        clientRef.current = null;
-        console.log('✅ Existing connection terminated');
-      }
-      
+      await teardownRealtimePipeline();
+
       console.log('Initializing client...');
-      const client = initializeClient();
+      const client = createRealtimeClient();
+      clientRef.current = client;
+      setupRealtimePipeline(client);
       lastConsultantIdRef.current = consultantId;
       
       console.log('Setting connection state to connecting...');
       setState(prev => ({ 
         ...prev, 
         connectionState: 'connecting',
-        error: null 
+        error: null,
+        agentPhase: DEFAULT_AGENT_PHASE,
+        pendingAgentPhase: null,
+        phaseTransitionStatus: 'idle',
+        phaseTransitionAttempt: 0,
+        phaseTransitionReason: undefined,
+        phaseTransitionId: null,
       }));
       
-      console.log('About to call client.initializeSession...');
-      await client.initializeSession(consultantId);
-      console.log('client.initializeSession completed');
+      const controller = controllerRef.current;
+      if (!controller) {
+        throw new Error('Realtime controller is not initialized');
+      }
+
+      console.log('About to call controller.connect...');
+      await controller.connect({ consultantId });
+      console.log('controller.connect completed');
     } catch (error) {
+      console.error('Failed to establish realtime session:', error);
       setState(prev => ({ 
         ...prev,
         connectionState: 'error',
@@ -336,15 +519,14 @@ export const useRealtimeConnection = (): UseRealtimeConnectionReturn => {
           suggestions: ['ネットワーク接続を確認してください', '再度お試しください']
         }
       }));
+      await teardownRealtimePipeline();
     }
-  }, [initializeClient]);
+  }, [createRealtimeClient, setupRealtimePipeline, teardownRealtimePipeline]);
 
   // 切断
   const disconnect = useCallback(async () => {
-    if (clientRef.current) {
-      await clientRef.current.endSession();
-    }
-  }, []);
+    await teardownRealtimePipeline();
+  }, [teardownRealtimePipeline]);
 
   // 再接続
   const retry = useCallback(async () => {
@@ -404,6 +586,67 @@ export const useRealtimeConnection = (): UseRealtimeConnectionReturn => {
     }
   }, []);
 
+  const requestAgentPhase = useCallback((phase: ConsultingPhase) => {
+    phaseManagerRef.current?.requestTransition(phase);
+  }, []);
+
+  const forceAgentPhase = useCallback(
+    async (phase: ConsultingPhase): Promise<void> => {
+      if (!state.consultantId) {
+        return;
+      }
+
+      const summary = summarizeMessageHistory(state.messageHistory);
+      const consultantId = state.consultantId;
+
+      try {
+        await teardownRealtimePipeline();
+
+        const client = createRealtimeClient();
+        clientRef.current = client;
+        setupRealtimePipeline(client);
+        client.setSessionSummary(summary);
+        client.primeAgentPhase(phase, { resetConversation: true });
+        lastConsultantIdRef.current = consultantId;
+
+        setState(prev => ({
+          ...prev,
+          connectionState: 'connecting',
+          isConnected: false,
+          error: null,
+          agentPhase: phase,
+          pendingAgentPhase: null,
+          phaseTransitionStatus: 'idle',
+          phaseTransitionAttempt: 0,
+          phaseTransitionReason: undefined,
+          phaseTransitionId: null,
+        }));
+
+        await client.initializeSession(consultantId);
+        await client.setAgentPhase(phase, { resetConversation: true });
+        await client.simulateUserContinuation();
+        await client.sendPhaseKickoffPrompt(phase);
+
+        phaseManagerRef.current?.forceTransition(phase);
+      } catch (error) {
+        console.error('Failed to restart session with new phase:', error);
+        setState(prev => ({
+          ...prev,
+          connectionState: 'error',
+          error: {
+            type: 'connection_error',
+            message:
+              error instanceof Error
+                ? error.message
+                : 'フェーズ再適用に失敗しました',
+            suggestions: ['ネットワーク状況を確認してください', '再度フェーズ切替をお試しください'],
+          },
+        }));
+      }
+    },
+    [createRealtimeClient, setupRealtimePipeline, state.consultantId, state.messageHistory, teardownRealtimePipeline],
+  );
+
   // 音声バッファ操作
   const commitAudioBuffer = useCallback(() => {
     if (clientRef.current) {
@@ -430,12 +673,11 @@ export const useRealtimeConnection = (): UseRealtimeConnectionReturn => {
   // クリーンアップ
   useEffect(() => {
     return () => {
-      if (clientRef.current) {
-        clientRef.current.endSession();
-        clientRef.current = null;
-      }
+      teardownRealtimePipeline().catch(() => {
+        // no-op: クリーンアップ失敗時は無視
+      });
     };
-  }, []);
+  }, [teardownRealtimePipeline]);
 
   // アクション集約
   const actions: RealtimeConnectionActions = {
@@ -449,6 +691,8 @@ export const useRealtimeConnection = (): UseRealtimeConnectionReturn => {
     createResponse,
     cancelResponse,
     changePhase,
+    requestAgentPhase,
+    forceAgentPhase,
     commitAudioBuffer,
     clearAudioBuffer,
     clearError,

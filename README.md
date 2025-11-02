@@ -101,6 +101,10 @@ npm run build
 - `npm run lint` - コードのリント
 - `npm run typecheck` - TypeScriptの型チェック
 
+### ID/PASS
+ID：admin@example.com
+PASS：admin
+
 ## ライセンス
 
 [ライセンス情報を追加してください]

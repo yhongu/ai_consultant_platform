@@ -1,15 +1,16 @@
 import React, { useState } from 'react';
-import { 
-  Mic, 
-  MicOff, 
-  Phone, 
-  PhoneOff, 
-  Volume2, 
+import {
+  Mic,
+  MicOff,
+  Phone,
+  PhoneOff,
+  Volume2,
   VolumeX,
   Settings,
   Wifi,
   WifiOff,
-  AlertCircle
+  AlertCircle,
+  Activity,
 } from 'lucide-react';
 
 interface RealtimeVoiceControlsProps {
@@ -53,7 +54,7 @@ export const RealtimeVoiceControls: React.FC<RealtimeVoiceControlsProps> = ({
   isRemoteMuted,
   audioLevel,
   isVoiceActive,
-  conversationPhase: _conversationPhase,
+  conversationPhase,
   error,
   isFallbackMode,
   onStartCall,
@@ -87,7 +88,32 @@ export const RealtimeVoiceControls: React.FC<RealtimeVoiceControlsProps> = ({
     }
   };
 
-  // 会話フェーズ表示は現在未使用（必要時に再有効化）
+  const getPhaseDisplayName = (
+    phase:
+      | 'questions'
+      | 'hot-reading'
+      | 'cold-reading'
+      | 'subsidies'
+      | 'summary'
+      | 'recommendations',
+  ): string => {
+    switch (phase) {
+      case 'questions':
+        return '質問';
+      case 'hot-reading':
+        return 'ホットリーディング';
+      case 'cold-reading':
+        return 'コールドリーディング';
+      case 'subsidies':
+        return '補助金提案';
+      case 'summary':
+        return 'サマリー';
+      case 'recommendations':
+        return '推奨事項';
+      default:
+        return '不明';
+    }
+  };
 
   // 音声レベルのビジュアライザー
   const VoiceLevelIndicator = () => (
@@ -144,8 +170,7 @@ export const RealtimeVoiceControls: React.FC<RealtimeVoiceControlsProps> = ({
         )}
       </div>
 
-      {/* 会話フェーズ表示 */}
-      {/* {isConnected && (
+      {isConnected && (
         <div className="bg-blue-50 p-3 rounded-lg">
           <div className="flex items-center space-x-2">
             <Activity className="w-4 h-4 text-blue-600" />
@@ -154,7 +179,7 @@ export const RealtimeVoiceControls: React.FC<RealtimeVoiceControlsProps> = ({
             </span>
           </div>
         </div>
-      )} */}
+      )}
 
       {/* メイン操作ボタン */}
       <div className="flex items-center justify-center space-x-4">

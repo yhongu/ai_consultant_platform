@@ -1,16 +1,32 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Mail, Lock, LogIn } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 export const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const { login, isAuthenticated } = useAuth();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      navigate('/consultants', { replace: true });
+    }
+  }, [isAuthenticated, navigate]);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    // MVPなので実際の認証は行わず、直接遷移
-    navigate('/consultants');
+    const isSuccess = login(email.trim(), password);
+
+    if (isSuccess) {
+      setError(null);
+      navigate('/consultants');
+      return;
+    }
+
+    setError('メールアドレスまたはパスワードが正しくありません。');
   };
 
   return (
@@ -37,7 +53,12 @@ export const LoginPage: React.FC = () => {
                 id="email"
                 type="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  if (error) {
+                    setError(null);
+                  }
+                }}
                 className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
                 placeholder="your@example.com"
                 required
@@ -55,13 +76,24 @@ export const LoginPage: React.FC = () => {
                 id="password"
                 type="password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (error) {
+                    setError(null);
+                  }
+                }}
                 className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
                 placeholder="••••••••"
                 required
               />
             </div>
           </div>
+
+          {error && (
+            <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-md p-3">
+              {error}
+            </div>
+          )}
 
           <button
             type="submit"
